@@ -36,7 +36,7 @@ lib/src/main/cpp/
   dc_jni.cpp           JNI 薄桥，只搬结果
   dc_shaders_spv.h     由 GLSL 生成的 SPIR-V（勿手改）
   shaders/             源着色器
-desktop/dc_host.cpp    桌面 harness：跑内核 + 22 项断言 + 输出 PPM
+desktop/dc_host.cpp    桌面 harness：跑内核 + 21 项断言 + 输出 PPM
 verify/run_desktop.sh  一键复核（编译着色器 → -Werror 编译 → lavapipe 实跑）
 ```
 
