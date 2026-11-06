@@ -1,0 +1,32 @@
+name: 构建 AAR
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 桌面复核（渲染内核逐像素断言）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq glslang-tools mesa-vulkan-drivers vulkan-tools libvulkan-dev
+          ./verify/run_desktop.sh
+
+      - name: 构建 AAR
+        run: ./gradlew :lib:assembleRelease --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: drivercheck-aar
+          path: lib/build/outputs/aar/lib-release.aar
+          retention-days: 30
