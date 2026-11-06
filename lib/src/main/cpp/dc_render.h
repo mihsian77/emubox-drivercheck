@@ -14,6 +14,8 @@ struct RenderOptions {
     uint32_t height = 512;
     uint32_t frames = 2;      // 重复渲染帧数，用于像素一致性判定
     int deviceIndex = -1;     // -1 = 自动选择
+    // 非空：直接 dlopen 这个 .so 当 Vulkan 实现（换驱动实测）；空：走系统 loader
+    const char* driverPath = nullptr;
 };
 
 struct Step {

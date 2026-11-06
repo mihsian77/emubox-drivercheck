@@ -7,6 +7,7 @@ EmuBox 自研的驱动实测内核。闭源，仅内部使用，不对外分发�
 - 不自带 hook 运行时，不依赖 `libvulkan_samples.so`
 - 离屏渲染一张**确定性测试图案** → 回读像素 → 人眼看图 + 程序逐像素判定
 - 同一份 `dc_render.cpp` 既编进 APK，也在桌面 lavapipe 上逐像素验证
+- 驱动来源可切换：系统 loader 或任意 `libvulkan_*.so`，两条路径共用同一条渲染代码
 
 ## 为什么是离屏渲染
 
@@ -28,11 +29,30 @@ EmuBox 自研的驱动实测内核。闭源，仅内部使用，不对外分发�
 
 每项都有期望值和实测值，异常项直接给用户看「应为 G≈255 R/B≈0，实际 R=182 G=182」。
 
+## 换驱动实测（M2）
+
+`DriverCheck.run(driverPath = "/path/to/libvulkan_xxx.so")` 会绕过系统 loader，直接
+`dlopen` 该驱动、取 `vk_icdGetInstanceProcAddr`（或 `vkGetInstanceProcAddr`），再逐级
+解析到 `vkCreateDevice` 与设备级函数。
+
+证据：桌面同一台机器上，系统 loader 与直载 `libvulkan_lvp.so` 跑出的像素哈希
+**完全相同**（`13fffa78aa90ae92`），说明换驱动路径没有引入任何结果差异。
+
+```
+open_driver  → create_instance → resolve_instance → check_format
+→ create_device → resolve_device → create_target → create_renderpass
+→ create_pipeline → render × N → selfcheck
+```
+
+哪一级缺函数就报哪一级（例如 `resolve_device: 缺函数 vkCmdCopyImageToBuffer`），
+Android 上 `dlopen` 失败会带 `dlerror` 原文。
+
 ## 结构
 
 ```
 lib/src/main/cpp/
   dc_render.cpp/.h     渲染内核（纯 C++，无 JNI/Android 依赖）
+  dc_vkapi.cpp/.h      函数表：系统 loader / 自定义驱动两种来源
   dc_jni.cpp           JNI 薄桥，只搬结果
   dc_shaders_spv.h     由 GLSL 生成的 SPIR-V（勿手改）
   shaders/             源着色器
@@ -46,8 +66,8 @@ verify/run_desktop.sh  一键复核（编译着色器 → -Werror 编译 → lav
 ./verify/run_desktop.sh
 ```
 
-输出 `ALL CHECKS PASSED` 才算改动可用。当前基线：lavapipe (LLVM 20.1.2, Vulkan 1.4.318)
-512×512 三帧全一致，单帧 ~14 ms。
+输出 `ALL CHECKS PASSED` 才算改动可用。当前基线：lavapipe (LLVM 20.1.2, Vulkan 1.4.318) 512×512 三帧全一致，单帧 3–14 ms
+（首帧含管线编译），21 项断言全过，系统/直载两条路径哈希相同。
 
 ## 集成到 EmuBox
 
@@ -59,5 +79,5 @@ verify/run_desktop.sh  一键复核（编译着色器 → -Werror 编译 → lav
 ## 闭源约定
 
 - 仓库私有，AAR 不发布到任何公共仓库
-- native 用 `-fvisibility=hidden`，只导出两个 JNI 符号
+- native 用 `-fvisibility=hidden` + `--exclude-libs,ALL`，实测只导出 2 个 JNI 符号
 - 不引用任何第三方闭源二进制；SPIR-V 由本仓库着色器生成

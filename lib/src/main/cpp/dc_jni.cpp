@@ -37,12 +37,16 @@ void appendJsonString(std::string& out, const std::string& s) {
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_emubox_drivercheck_DriverCheck_nativeRun(JNIEnv* env, jobject /*thiz*/, jint width,
-                                                 jint height, jint frames) {
+                                                 jint height, jint frames, jstring driverPath) {
     dc::RenderOptions o;
     o.width = width > 0 ? static_cast<uint32_t>(width) : 512;
     o.height = height > 0 ? static_cast<uint32_t>(height) : 512;
     o.frames = frames > 0 ? static_cast<uint32_t>(frames) : 2;
+    const char* dp = nullptr;
+    if (driverPath != nullptr) dp = env->GetStringUTFChars(driverPath, nullptr);
+    o.driverPath = dp;
     g_last = dc::render(o);
+    if (dp != nullptr) env->ReleaseStringUTFChars(driverPath, dp);
     if (!g_last.ok) return nullptr;
     const jsize n = static_cast<jsize>(g_last.rgba.size());
     jbyteArray out = env->NewByteArray(n);

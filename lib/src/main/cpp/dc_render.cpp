@@ -1,5 +1,6 @@
 #include "dc_render.h"
 #include "dc_shaders_spv.h"
+#include "dc_vkapi.h"
 
 #include <vulkan/vulkan.h>
 
@@ -51,9 +52,10 @@ const char* resName(VkResult r) {
     return buf;
 }
 
-uint32_t findMemoryType(VkPhysicalDevice dev, uint32_t bits, VkMemoryPropertyFlags want) {
+uint32_t findMemoryType(const VkApi& api, VkPhysicalDevice dev, uint32_t bits,
+                        VkMemoryPropertyFlags want) {
     VkPhysicalDeviceMemoryProperties mp{};
-    vkGetPhysicalDeviceMemoryProperties(dev, &mp);
+    api.vkGetPhysicalDeviceMemoryProperties(dev, &mp);
     for (uint32_t i = 0; i < mp.memoryTypeCount; ++i) {
         if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want) == want) return i;
     }
@@ -62,6 +64,7 @@ uint32_t findMemoryType(VkPhysicalDevice dev, uint32_t bits, VkMemoryPropertyFla
 
 // 所有 Vulkan 句柄集中持有，出错时按序销毁
 struct Handles {
+    VkApi api;
     VkInstance instance = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkImage image = VK_NULL_HANDLE;
@@ -81,22 +84,23 @@ struct Handles {
 
     void destroy() {
         if (device != VK_NULL_HANDLE) {
-            if (fence) vkDestroyFence(device, fence, nullptr);
-            if (pool) vkDestroyCommandPool(device, pool, nullptr);
-            if (buf) vkDestroyBuffer(device, buf, nullptr);
-            if (bufMem) vkFreeMemory(device, bufMem, nullptr);
-            if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
-            if (layout) vkDestroyPipelineLayout(device, layout, nullptr);
-            if (vert) vkDestroyShaderModule(device, vert, nullptr);
-            if (frag) vkDestroyShaderModule(device, frag, nullptr);
-            if (fb) vkDestroyFramebuffer(device, fb, nullptr);
-            if (pass) vkDestroyRenderPass(device, pass, nullptr);
-            if (view) vkDestroyImageView(device, view, nullptr);
-            if (image) vkDestroyImage(device, image, nullptr);
-            if (imageMem) vkFreeMemory(device, imageMem, nullptr);
-            vkDestroyDevice(device, nullptr);
+            if (fence) api.vkDestroyFence(device, fence, nullptr);
+            if (pool) api.vkDestroyCommandPool(device, pool, nullptr);
+            if (buf) api.vkDestroyBuffer(device, buf, nullptr);
+            if (bufMem) api.vkFreeMemory(device, bufMem, nullptr);
+            if (pipeline) api.vkDestroyPipeline(device, pipeline, nullptr);
+            if (layout) api.vkDestroyPipelineLayout(device, layout, nullptr);
+            if (vert) api.vkDestroyShaderModule(device, vert, nullptr);
+            if (frag) api.vkDestroyShaderModule(device, frag, nullptr);
+            if (fb) api.vkDestroyFramebuffer(device, fb, nullptr);
+            if (pass) api.vkDestroyRenderPass(device, pass, nullptr);
+            if (view) api.vkDestroyImageView(device, view, nullptr);
+            if (image) api.vkDestroyImage(device, image, nullptr);
+            if (imageMem) api.vkFreeMemory(device, imageMem, nullptr);
+            api.vkDestroyDevice(device, nullptr);
         }
-        if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
+        if (instance != VK_NULL_HANDLE) api.vkDestroyInstance(instance, nullptr);
+        closeApi(api);
     }
 };
 
@@ -111,6 +115,7 @@ RenderResult render(const RenderOptions& opts) {
     r.height = H;
 
     Handles h;
+    VkApi& api = h.api;
     auto stepOk = [&r](const char* name, std::string detail) {
         r.steps.push_back({name, true, std::move(detail)});
     };
@@ -134,26 +139,34 @@ RenderResult render(const RenderOptions& opts) {
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
-    VkResult vr = vkCreateInstance(&ici, nullptr, &h.instance);
+    std::string openErr;
+    if (!openApi(h.api, opts.driverPath, openErr)) return fail("open_driver", openErr);
+    stepOk("open_driver", h.api.source);
+
+    VkResult vr = api.vkCreateInstance(&ici, nullptr, &h.instance);
     if (vr != VK_SUCCESS) return fail("create_instance", resName(vr));
+    {
+        const char* miss = resolveInstance(h.api, h.instance);
+        if (miss[0]) return fail("resolve_instance", std::string("缺函数 ") + miss);
+    }
     stepOk("create_instance", "ok");
 
     // ---- 2. physical device ----
     uint32_t devCount = 0;
-    vr = vkEnumeratePhysicalDevices(h.instance, &devCount, nullptr);
+    vr = api.vkEnumeratePhysicalDevices(h.instance, &devCount, nullptr);
     if (vr != VK_SUCCESS) return fail("enumerate_devices", resName(vr));
     if (devCount == 0) return fail("enumerate_devices", "no Vulkan device (驱动未安装或加载失败)");
     std::vector<VkPhysicalDevice> devs(devCount);
-    vkEnumeratePhysicalDevices(h.instance, &devCount, devs.data());
+    api.vkEnumeratePhysicalDevices(h.instance, &devCount, devs.data());
 
     VkPhysicalDevice phys = VK_NULL_HANDLE;
     uint32_t gfxFamily = UINT32_MAX;
     for (uint32_t i = 0; i < devCount; ++i) {
         if (opts.deviceIndex >= 0 && static_cast<uint32_t>(opts.deviceIndex) != i) continue;
         uint32_t qCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &qCount, nullptr);
+        api.vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &qCount, nullptr);
         std::vector<VkQueueFamilyProperties> qs(qCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &qCount, qs.data());
+        api.vkGetPhysicalDeviceQueueFamilyProperties(devs[i], &qCount, qs.data());
         for (uint32_t q = 0; q < qCount; ++q) {
             if (qs[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
                 phys = devs[i];
@@ -166,7 +179,7 @@ RenderResult render(const RenderOptions& opts) {
     if (phys == VK_NULL_HANDLE) return fail("pick_device", "没有支持图形队列的 Vulkan 设备");
 
     VkPhysicalDeviceProperties dp{};
-    vkGetPhysicalDeviceProperties(phys, &dp);
+    api.vkGetPhysicalDeviceProperties(phys, &dp);
     r.deviceName = dp.deviceName;
     r.apiVersion = versionString(dp.apiVersion);
     r.driverVersion = versionString(dp.driverVersion);
@@ -177,7 +190,7 @@ RenderResult render(const RenderOptions& opts) {
     // 格式必须是 R8G8B8A8_UNORM：规范要求所有实现支持它作 color attachment，
     // 不支持说明驱动有缺陷——这本身就是结论，不做格式降级来掩盖。
     VkFormatProperties fp{};
-    vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_R8G8B8A8_UNORM, &fp);
+    api.vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_R8G8B8A8_UNORM, &fp);
     const VkFormatFeatureFlags need =
         VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
     if ((fp.optimalTilingFeatures & need) != need) {
@@ -200,10 +213,14 @@ RenderResult render(const RenderOptions& opts) {
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    vr = vkCreateDevice(phys, &dci, nullptr, &h.device);
+    vr = api.vkCreateDevice(phys, &dci, nullptr, &h.device);
     if (vr != VK_SUCCESS) return fail("create_device", resName(vr));
+    {
+        const char* miss = resolveDevice(h.api, h.device);
+        if (miss[0]) return fail("resolve_device", std::string("缺函数 ") + miss);
+    }
     VkQueue queue = VK_NULL_HANDLE;
-    vkGetDeviceQueue(h.device, gfxFamily, 0, &queue);
+    api.vkGetDeviceQueue(h.device, gfxFamily, 0, &queue);
     stepOk("create_device", "queue family " + std::to_string(gfxFamily));
 
     // ---- 4. image ----
@@ -219,20 +236,20 @@ RenderResult render(const RenderOptions& opts) {
     imgc.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     imgc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imgc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vr = vkCreateImage(h.device, &imgc, nullptr, &h.image);
+    vr = api.vkCreateImage(h.device, &imgc, nullptr, &h.image);
     if (vr != VK_SUCCESS) return fail("create_image", resName(vr));
 
     VkMemoryRequirements mr{};
-    vkGetImageMemoryRequirements(h.device, h.image, &mr);
-    uint32_t mt = findMemoryType(phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    api.vkGetImageMemoryRequirements(h.device, h.image, &mr);
+    uint32_t mt = findMemoryType(api, phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mt == UINT32_MAX) return fail("image_memory", "无 DEVICE_LOCAL 内存类型");
     VkMemoryAllocateInfo mai{};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = mr.size;
     mai.memoryTypeIndex = mt;
-    vr = vkAllocateMemory(h.device, &mai, nullptr, &h.imageMem);
+    vr = api.vkAllocateMemory(h.device, &mai, nullptr, &h.imageMem);
     if (vr != VK_SUCCESS) return fail("image_memory", resName(vr));
-    vr = vkBindImageMemory(h.device, h.image, h.imageMem, 0);
+    vr = api.vkBindImageMemory(h.device, h.image, h.imageMem, 0);
     if (vr != VK_SUCCESS) return fail("bind_image", resName(vr));
 
     VkImageViewCreateInfo ivc{};
@@ -241,7 +258,7 @@ RenderResult render(const RenderOptions& opts) {
     ivc.viewType = VK_IMAGE_VIEW_TYPE_2D;
     ivc.format = VK_FORMAT_R8G8B8A8_UNORM;
     ivc.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vr = vkCreateImageView(h.device, &ivc, nullptr, &h.view);
+    vr = api.vkCreateImageView(h.device, &ivc, nullptr, &h.view);
     if (vr != VK_SUCCESS) return fail("create_view", resName(vr));
     stepOk("create_target", std::to_string(W) + "x" + std::to_string(H));
 
@@ -278,7 +295,7 @@ RenderResult render(const RenderOptions& opts) {
     rpc.pSubpasses = &sub;
     rpc.dependencyCount = 1;
     rpc.pDependencies = &dep;
-    vr = vkCreateRenderPass(h.device, &rpc, nullptr, &h.pass);
+    vr = api.vkCreateRenderPass(h.device, &rpc, nullptr, &h.pass);
     if (vr != VK_SUCCESS) return fail("create_renderpass", resName(vr));
 
     VkFramebufferCreateInfo fbc{};
@@ -289,7 +306,7 @@ RenderResult render(const RenderOptions& opts) {
     fbc.width = W;
     fbc.height = H;
     fbc.layers = 1;
-    vr = vkCreateFramebuffer(h.device, &fbc, nullptr, &h.fb);
+    vr = api.vkCreateFramebuffer(h.device, &fbc, nullptr, &h.fb);
     if (vr != VK_SUCCESS) return fail("create_framebuffer", resName(vr));
     stepOk("create_renderpass", "ok");
 
@@ -299,7 +316,7 @@ RenderResult render(const RenderOptions& opts) {
         sci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         sci.codeSize = bytes;
         sci.pCode = code;
-        return vkCreateShaderModule(h.device, &sci, nullptr, out);
+        return api.vkCreateShaderModule(h.device, &sci, nullptr, out);
     };
     vr = makeModule(kVertSpv, kVertSpvSize, &h.vert);
     if (vr != VK_SUCCESS) return fail("shader_vert", resName(vr));
@@ -353,7 +370,7 @@ RenderResult render(const RenderOptions& opts) {
 
     VkPipelineLayoutCreateInfo plc{};
     plc.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    vr = vkCreatePipelineLayout(h.device, &plc, nullptr, &h.layout);
+    vr = api.vkCreatePipelineLayout(h.device, &plc, nullptr, &h.layout);
     if (vr != VK_SUCCESS) return fail("pipeline_layout", resName(vr));
 
     VkGraphicsPipelineCreateInfo gp{};
@@ -369,7 +386,7 @@ RenderResult render(const RenderOptions& opts) {
     gp.layout = h.layout;
     gp.renderPass = h.pass;
     gp.subpass = 0;
-    vr = vkCreateGraphicsPipelines(h.device, VK_NULL_HANDLE, 1, &gp, nullptr, &h.pipeline);
+    vr = api.vkCreateGraphicsPipelines(h.device, VK_NULL_HANDLE, 1, &gp, nullptr, &h.pipeline);
     if (vr != VK_SUCCESS) return fail("create_pipeline", resName(vr));
     stepOk("create_pipeline", "fullscreen triangle");
 
@@ -380,12 +397,12 @@ RenderResult render(const RenderOptions& opts) {
     bci.size = bytes;
     bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    vr = vkCreateBuffer(h.device, &bci, nullptr, &h.buf);
+    vr = api.vkCreateBuffer(h.device, &bci, nullptr, &h.buf);
     if (vr != VK_SUCCESS) return fail("create_buffer", resName(vr));
 
     VkMemoryRequirements bmr{};
-    vkGetBufferMemoryRequirements(h.device, h.buf, &bmr);
-    uint32_t bt = findMemoryType(phys, bmr.memoryTypeBits,
+    api.vkGetBufferMemoryRequirements(h.device, h.buf, &bmr);
+    uint32_t bt = findMemoryType(api, phys, bmr.memoryTypeBits,
                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (bt == UINT32_MAX) return fail("buffer_memory", "无 HOST_VISIBLE|COHERENT 内存类型");
@@ -393,16 +410,16 @@ RenderResult render(const RenderOptions& opts) {
     bmai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     bmai.allocationSize = bmr.size;
     bmai.memoryTypeIndex = bt;
-    vr = vkAllocateMemory(h.device, &bmai, nullptr, &h.bufMem);
+    vr = api.vkAllocateMemory(h.device, &bmai, nullptr, &h.bufMem);
     if (vr != VK_SUCCESS) return fail("buffer_memory", resName(vr));
-    vr = vkBindBufferMemory(h.device, h.buf, h.bufMem, 0);
+    vr = api.vkBindBufferMemory(h.device, h.buf, h.bufMem, 0);
     if (vr != VK_SUCCESS) return fail("bind_buffer", resName(vr));
 
     VkCommandPoolCreateInfo pci{};
     pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pci.queueFamilyIndex = gfxFamily;
-    vr = vkCreateCommandPool(h.device, &pci, nullptr, &h.pool);
+    vr = api.vkCreateCommandPool(h.device, &pci, nullptr, &h.pool);
     if (vr != VK_SUCCESS) return fail("command_pool", resName(vr));
 
     VkCommandBufferAllocateInfo cba2{};
@@ -410,12 +427,12 @@ RenderResult render(const RenderOptions& opts) {
     cba2.commandPool = h.pool;
     cba2.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cba2.commandBufferCount = 1;
-    vr = vkAllocateCommandBuffers(h.device, &cba2, &h.cmd);
+    vr = api.vkAllocateCommandBuffers(h.device, &cba2, &h.cmd);
     if (vr != VK_SUCCESS) return fail("command_buffer", resName(vr));
 
     VkFenceCreateInfo fci{};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    vr = vkCreateFence(h.device, &fci, nullptr, &h.fence);
+    vr = api.vkCreateFence(h.device, &fci, nullptr, &h.fence);
     if (vr != VK_SUCCESS) return fail("fence", resName(vr));
 
     // ---- 8. 渲染 frames 次 ----
@@ -426,13 +443,13 @@ RenderResult render(const RenderOptions& opts) {
     auto renderStart = std::chrono::steady_clock::now();
 
     for (uint32_t f = 0; f < frames; ++f) {
-        vr = vkResetCommandBuffer(h.cmd, 0);
+        vr = api.vkResetCommandBuffer(h.cmd, 0);
         if (vr != VK_SUCCESS) return fail("reset_command", resName(vr));
 
         VkCommandBufferBeginInfo cbbi{};
         cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vr = vkBeginCommandBuffer(h.cmd, &cbbi);
+        vr = api.vkBeginCommandBuffer(h.cmd, &cbbi);
         if (vr != VK_SUCCESS) return fail("begin_command", resName(vr));
 
         VkClearValue clear{};
@@ -444,10 +461,10 @@ RenderResult render(const RenderOptions& opts) {
         rpb.renderArea = {{0, 0}, {W, H}};
         rpb.clearValueCount = 1;
         rpb.pClearValues = &clear;
-        vkCmdBeginRenderPass(h.cmd, &rpb, VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(h.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, h.pipeline);
-        vkCmdDraw(h.cmd, 3, 1, 0, 0);
-        vkCmdEndRenderPass(h.cmd);
+        api.vkCmdBeginRenderPass(h.cmd, &rpb, VK_SUBPASS_CONTENTS_INLINE);
+        api.vkCmdBindPipeline(h.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, h.pipeline);
+        api.vkCmdDraw(h.cmd, 3, 1, 0, 0);
+        api.vkCmdEndRenderPass(h.cmd);
 
         VkBufferImageCopy region{};
         region.bufferOffset = 0;
@@ -456,29 +473,29 @@ RenderResult render(const RenderOptions& opts) {
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         region.imageOffset = {0, 0, 0};
         region.imageExtent = {W, H, 1};
-        vkCmdCopyImageToBuffer(h.cmd, h.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, h.buf, 1,
+        api.vkCmdCopyImageToBuffer(h.cmd, h.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, h.buf, 1,
                                &region);
 
-        vr = vkEndCommandBuffer(h.cmd);
+        vr = api.vkEndCommandBuffer(h.cmd);
         if (vr != VK_SUCCESS) return fail("end_command", resName(vr));
 
         VkSubmitInfo si{};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &h.cmd;
-        vr = vkQueueSubmit(queue, 1, &si, h.fence);
+        vr = api.vkQueueSubmit(queue, 1, &si, h.fence);
         if (vr != VK_SUCCESS) return fail("queue_submit", resName(vr));
 
-        vr = vkWaitForFences(h.device, 1, &h.fence, VK_TRUE, 5000000000ull);
+        vr = api.vkWaitForFences(h.device, 1, &h.fence, VK_TRUE, 5000000000ull);
         if (vr == VK_TIMEOUT) return fail("queue_wait", "5s 超时（驱动挂起或 GPU hang）");
         if (vr != VK_SUCCESS) return fail("queue_wait", resName(vr));
-        vkResetFences(h.device, 1, &h.fence);
+        api.vkResetFences(h.device, 1, &h.fence);
 
         void* mapped = nullptr;
-        vr = vkMapMemory(h.device, h.bufMem, 0, bytes, 0, &mapped);
+        vr = api.vkMapMemory(h.device, h.bufMem, 0, bytes, 0, &mapped);
         if (vr != VK_SUCCESS) return fail("map_memory", resName(vr));
         std::memcpy(pixels.data(), mapped, static_cast<size_t>(bytes));
-        vkUnmapMemory(h.device, h.bufMem);
+        api.vkUnmapMemory(h.device, h.bufMem);
 
         const uint64_t hh = hashBytes(pixels.data(), pixels.size());
         if (f == 0) {

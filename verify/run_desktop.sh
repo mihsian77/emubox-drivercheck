@@ -30,9 +30,23 @@ fi
 
 echo "== 2. 编译桌面 harness（-Wall -Wextra）=="
 g++ -std=c++17 -O2 -Wall -Wextra -Werror \
-    -Ilib/src/main/cpp desktop/dc_host.cpp lib/src/main/cpp/dc_render.cpp \
-    -lvulkan -o /tmp/dc_host
+    -Ilib/src/main/cpp desktop/dc_host.cpp \
+    lib/src/main/cpp/dc_render.cpp lib/src/main/cpp/dc_vkapi.cpp \
+    -ldl -o /tmp/dc_host
 
 echo "== 3. 在 lavapipe 上实跑并逐像素断言 =="
 VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}" /tmp/dc_host 3
+
+echo "== 4. 系统 loader 与直载驱动必须得到同一结果 =="
+LVP="$(ldconfig -p | awk '/libvulkan_lvp\.so/{print $NF; exit}')"
+if [ -n "$LVP" ]; then
+  H1=$(VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}" /tmp/dc_host 2 | grep '^hash=' | cut -d' ' -f1)
+  H2=$(/tmp/dc_host 2 --driver "$LVP" | grep '^hash=' | cut -d' ' -f1)
+  echo "  system: $H1"
+  echo "  direct: $H2"
+  [ "$H1" = "$H2" ] || { echo "  FAIL：两条加载路径结果不一致"; exit 1; }
+  echo "  PASS：换驱动路径与系统路径像素完全一致"
+else
+  echo "  跳过：未找到 libvulkan_lvp.so"
+fi
 echo "== 通过：桌面复核与 APK 用的是同一份 dc_render.cpp =="

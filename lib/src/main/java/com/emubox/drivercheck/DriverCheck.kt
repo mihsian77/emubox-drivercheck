@@ -52,16 +52,23 @@ object DriverCheck {
         System.loadLibrary("drivercheck")
     }
 
-    private external fun nativeRun(width: Int, height: Int, frames: Int): ByteArray?
+    private external fun nativeRun(width: Int, height: Int, frames: Int, driverPath: String?): ByteArray?
     private external fun nativeReport(): String
 
     /**
      * 跑一次渲染实测。耗时约 10–100 ms（取决于驱动与分辨率）。
      *
+     * @param driverPath 传 .so 绝对路径则绕过系统 loader 直接加载该驱动（换驱动实测）；
+     *   传 null 走系统驱动。dlopen 失败时报告里的 open_driver 步骤会带 dlerror 原文。
      * @return 首位为渲染图像（失败为 null），次位为报告（永远非空）
      */
-    fun run(width: Int = 512, height: Int = 512, frames: Int = 3): Pair<Bitmap?, RenderReport> {
-        val rgba = nativeRun(width, height, frames)
+    fun run(
+        width: Int = 512,
+        height: Int = 512,
+        frames: Int = 3,
+        driverPath: String? = null,
+    ): Pair<Bitmap?, RenderReport> {
+        val rgba = nativeRun(width, height, frames, driverPath?.takeIf { it.isNotBlank() })
         val report = parseReport(nativeReport())
         if (rgba == null) return null to report
 

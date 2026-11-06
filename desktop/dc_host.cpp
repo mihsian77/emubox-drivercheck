@@ -26,6 +26,7 @@ int main(int argc, char** argv) {
     o.height = 512;
     o.frames = 3;
     if (argc > 1) o.frames = std::atoi(argv[1]);
+    if (argc > 3 && std::strcmp(argv[2], "--driver") == 0) o.driverPath = argv[3];
 
     const dc::RenderResult r = dc::render(o);
 
