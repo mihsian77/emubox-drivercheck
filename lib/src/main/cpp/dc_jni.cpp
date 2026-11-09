@@ -79,7 +79,17 @@ Java_com_emubox_drivercheck_DriverCheck_nativeReport(JNIEnv* env, jobject /*thiz
     appendJsonString(j, r.apiVersion);
     j += ",\"vendorId\":" + std::to_string(r.vendorId);
     j += ",\"deviceId\":" + std::to_string(r.deviceId);
-    j += ",\"steps\":[";
+    j += ",\"depsLoaded\":[";
+    for (size_t i = 0; i < r.depsLoaded.size(); ++i) {
+        if (i) j += ',';
+        appendJsonString(j, r.depsLoaded[i]);
+    }
+    j += "],\"depsMissing\":[";
+    for (size_t i = 0; i < r.depsMissing.size(); ++i) {
+        if (i) j += ',';
+        appendJsonString(j, r.depsMissing[i]);
+    }
+    j += "],\"steps\":[";
     for (size_t i = 0; i < r.steps.size(); ++i) {
         if (i) j += ',';
         j += "{\"name\":";

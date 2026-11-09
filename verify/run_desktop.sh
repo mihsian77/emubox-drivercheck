@@ -49,4 +49,29 @@ if [ -n "$LVP" ]; then
 else
   echo "  跳过：未找到 libvulkan_lvp.so"
 fi
+echo "== 5. 依赖闭包（驱动包自带 .so 能否被按目录找到）=="
+gcc -shared -fPIC -Wl,-soname,libfake_dep.so \
+    verify/fake/dep.c -o /tmp/libfake_dep.so
+gcc -shared -fPIC verify/fake/driver.c -L/tmp -lfake_dep -o /tmp/libfake_driver.so
+g++ -std=c++17 -O2 -Wall -Wextra -Werror -Ilib/src/main/cpp \
+    verify/dep_test.cpp lib/src/main/cpp/dc_vkapi.cpp -ldl -o /tmp/dep_test
+
+mkdir -p /tmp/dc_case_ok /tmp/dc_case_miss
+cp /tmp/libfake_dep.so /tmp/libfake_driver.so /tmp/dc_case_ok/
+cp /tmp/libfake_driver.so /tmp/dc_case_miss/
+
+if /tmp/dep_test /tmp/dc_case_miss/libfake_driver.so >/tmp/dc_miss.txt 2>&1; then
+  echo "  FAIL：缺依赖时不应成功"; cat /tmp/dc_miss.txt; exit 1
+fi
+grep -q 'M libfake_dep.so' /tmp/dc_miss.txt || {
+  echo "  FAIL：缺依赖没有报出库名"; cat /tmp/dc_miss.txt; exit 1; }
+echo "  缺依赖 → 报出 libfake_dep.so"
+
+if ! /tmp/dep_test /tmp/dc_case_ok/libfake_driver.so >/tmp/dc_ok.txt 2>&1; then
+  echo "  FAIL：同目录有依赖时应加载成功"; cat /tmp/dc_ok.txt; exit 1
+fi
+grep -q 'L /tmp/dc_case_ok/libfake_dep.so' /tmp/dc_ok.txt || {
+  echo "  FAIL：依赖没有被预加载"; cat /tmp/dc_ok.txt; exit 1; }
+echo "  同目录 → 依赖已预加载，驱动可打开"
+
 echo "== 通过：桌面复核与 APK 用的是同一份 dc_render.cpp =="

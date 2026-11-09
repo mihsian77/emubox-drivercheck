@@ -26,6 +26,10 @@ data class RenderReport(
     val vendorId: Int,
     val deviceId: Int,
     val steps: List<RenderStep>,
+    /** 换驱动时从驱动包内预加载的依赖库（绝对路径）。走系统驱动时为空。 */
+    val depsLoaded: List<String> = emptyList(),
+    /** 驱动 DT_NEEDED 里声明、但包内没找到的库名。 */
+    val depsMissing: List<String> = emptyList(),
 ) {
     val passedSteps: Int get() = steps.count { it.ok }
     val failedSteps: List<RenderStep> get() = steps.filter { !it.ok }
@@ -169,6 +173,13 @@ object DriverCheck {
             vendorId = o.optInt("vendorId"),
             deviceId = o.optInt("deviceId"),
             steps = steps,
+            depsLoaded = strings(o.optJSONArray("depsLoaded")),
+            depsMissing = strings(o.optJSONArray("depsMissing")),
         )
+    }
+
+    private fun strings(a: org.json.JSONArray?): List<String> {
+        if (a == null) return emptyList()
+        return List(a.length()) { a.optString(it) }
     }
 }

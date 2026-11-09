@@ -44,6 +44,11 @@ struct RenderResult {
 
     double renderMs = 0;      // 单帧平均耗时
     std::vector<Step> steps;
+
+    // 换驱动时的依赖闭包：驱动包内已预加载的库、DT_NEEDED 里找不到的库。
+    // 走系统 loader 时两者都为空。
+    std::vector<std::string> depsLoaded;
+    std::vector<std::string> depsMissing;
 };
 
 // 执行一次渲染实测。线程安全（每次调用自建 instance/device）。

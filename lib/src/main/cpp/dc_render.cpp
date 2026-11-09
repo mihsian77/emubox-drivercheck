@@ -140,7 +140,11 @@ RenderResult render(const RenderOptions& opts) {
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
     std::string openErr;
-    if (!openApi(h.api, opts.driverPath, openErr)) return fail("open_driver", openErr);
+    // 依赖闭包要在 fail() 之前取出：fail() 会 closeApi 并清空 api。
+    const bool opened = openApi(h.api, opts.driverPath, openErr);
+    r.depsLoaded = h.api.depsLoaded;
+    r.depsMissing = h.api.depsMissing;
+    if (!opened) return fail("open_driver", openErr);
     stepOk("open_driver", h.api.source);
 
     VkResult vr = api.vkCreateInstance(&ici, nullptr, &h.instance);

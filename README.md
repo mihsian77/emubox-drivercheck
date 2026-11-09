@@ -35,6 +35,18 @@ EmuBox 自研的驱动实测内核。闭源，仅内部使用，不对外分发�
 `dlopen` 该驱动、取 `vk_icdGetInstanceProcAddr`（或 `vkGetInstanceProcAddr`），再逐级
 解析到 `vkCreateDevice` 与设备级函数。
 
+**依赖闭包**：高通跨机型驱动包是一组 `.so`（`libgsl.so`、`libllvm-glnext.so` 等），
+直接 `dlopen` 主文件时链接器会去默认路径找依赖，找不到就失败。`openApi` 现在会：
+
+1. 解析目标驱动的 `DT_NEEDED`
+2. 在**驱动自身目录**里逐个找，递归加载依赖的依赖（`RTLD_GLOBAL`，符号要对主驱动可见）
+3. 再以 `RTLD_LOCAL` 加载主驱动
+
+缺库时错误信息是「驱动包缺少依赖库：libgsl.so（要把驱动包内所有 .so 解压到同一目录）」，
+不是一句 generic 的 `dlopen failed`。报告里同时给出 `depsLoaded` / `depsMissing` 两个列表。
+
+> 前提：依赖库要带 SONAME。NDK / CMake 产出的 `.so` 默认都有，手工剥掉 SONAME 的包会被判为缺失。
+
 证据：桌面同一台机器上，系统 loader 与直载 `libvulkan_lvp.so` 跑出的像素哈希
 **完全相同**（`13fffa78aa90ae92`），说明换驱动路径没有引入任何结果差异。
 
@@ -57,7 +69,10 @@ lib/src/main/cpp/
   dc_shaders_spv.h     由 GLSL 生成的 SPIR-V（勿手改）
   shaders/             源着色器
 desktop/dc_host.cpp    桌面 harness：跑内核 + 21 项断言 + 输出 PPM
-verify/run_desktop.sh  一键复核（编译着色器 → -Werror 编译 → lavapipe 实跑）
+verify/run_desktop.sh  一键复核（着色器 → -Werror 编译 → lavapipe 实跑 → 依赖闭包）
+verify/dep_test.cpp    依赖闭包用例（同目录 / 缺库两种场景）
+verify/fake/           构造 DT_NEEDED 的假驱动，只用于上面这条用例
+DESIGN.md              三层判定（准入 / 渲染 / 画像）与 M2–M4 路线
 ```
 
 ## 验证

@@ -9,6 +9,7 @@
 #include <vulkan/vulkan.h>
 
 #include <string>
+#include <vector>
 
 namespace dc {
 
@@ -77,6 +78,12 @@ struct VkApi {
 
     // 来源描述，写给用户看
     std::string source;
+
+    // 驱动包内已预加载的依赖库（绝对路径），以及 DT_NEEDED 里没找到的库名。
+    // 高通跨机型驱动是一组 .so，缺 libgsl.so / libllvm-glnext.so 时 dlopen 会直接失败，
+    // 这两个列表就是把「为什么打不开」说清楚的全部依据。
+    std::vector<std::string> depsLoaded;
+    std::vector<std::string> depsMissing;
 };
 
 /**
